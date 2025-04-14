@@ -7,7 +7,9 @@ const fetch = require('node-fetch');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: '*' }
+  cors: {
+    origin: '*'
+  }
 });
 
 const PORT = process.env.PORT || 3001;
@@ -15,6 +17,7 @@ const PORT = process.env.PORT || 3001;
 let players = {}; // { socketId: { id, name } }
 let scores = {};
 let lastQuestion = null;
+let submittedAnswers = {}; // { socketId: answer }
 
 io.on('connection', (socket) => {
   const playerId = socket.id;
@@ -29,31 +32,47 @@ io.on('connection', (socket) => {
   });
 
   socket.on('getQuestion', async () => {
-    console.log(`📡 ${playerId} requested a question`);
     const q = await getQuestionFromAPI();
     if (q) {
-      console.log(`✅ Sending new question to all players`);
+      submittedAnswers = {}; // reset for new round
       io.emit('newQuestion', q);
-    } else {
-      console.error(`❌ Failed to fetch question`);
     }
   });
 
   socket.on('submitAnswer', ({ answer }) => {
-    console.log(`📨 Answer received from ${playerId}: ${answer}`);
+    submittedAnswers[playerId] = answer;
     io.emit('answerSubmitted', { player: playerId, answer });
 
     if (lastQuestion && answer === lastQuestion.answer) {
       scores[playerId] += 10;
     }
-
     io.emit('scores', scores);
+
+    if (Object.keys(submittedAnswers).length === Object.keys(players).length) {
+      // All players answered
+      io.emit('showCorrectAnswer');
+      let timeLeft = 3;
+
+      const countdownInterval = setInterval(async () => {
+        io.emit('countdown', timeLeft);
+        if (timeLeft === 0) {
+          clearInterval(countdownInterval);
+          const nextQuestion = await getQuestionFromAPI();
+          if (nextQuestion) {
+            submittedAnswers = {};
+            io.emit('newQuestion', nextQuestion);
+          }
+        }
+        timeLeft--;
+      }, 1000);
+    }
   });
 
   socket.on('disconnect', () => {
     console.log(`🔌 Player disconnected: ${playerId}`);
     delete players[playerId];
     delete scores[playerId];
+    delete submittedAnswers[playerId];
     io.emit('players', Object.values(players));
     io.emit('scores', scores);
   });
